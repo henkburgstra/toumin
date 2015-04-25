@@ -1,0 +1,157 @@
+constraints worden uit de database gelezen met de volgende (mysql) query
+
+USE INFORMATION_SCHEMA;
+SELECT rc.CONSTRAINT_NAME, rc.TABLE_NAME, kc.COLUMN_NAME, 
+rc.REFERENCED_TABLE_NAME, kc.REFERENCED_COLUMN_NAME, 
+rc.UPDATE_RULE, rc.DELETE_RULE 
+FROM REFERENTIAL_CONSTRAINTS AS rc
+JOIN KEY_COLUMN_USAGE AS kc
+ON rc.CONSTRAINT_NAME = kc.CONSTRAINT_NAME
+WHERE rc.CONSTRAINT_SCHEMA = 'amersfoort2'
+ORDER BY rc.TABLE_NAME, kc.COLUMN_NAME
+
+(misschien kan USE INFORMATION_SCHEMA weggelaten worden)
+
+Hierbij is TABLE_NAME de child table waar de foreign key constraint op zit.
+COLUMN_NAME is de foreign key 
+REFERENCED_TABLE_NAME is de master table
+REFERENCED_COLUMN_NAME is de primary key in de master table
+DELETE RULE 'CASCADE' betekent dat bij het verwijderen van een record
+uit de master table de gerelateerde records uit de referring/child table
+worden verwijderd.
+DELETE RULE 'RESTRICT' betekent dat een rij niet uit de referred/master table 
+kan worden verwijderd zolang er nog gerelateerde records in de child table zijn.
+
+Voorbeeld OpenAC, foreign key constraint gedefinieerd in tabel behandeling_data:
+
+TABLE_NAME        COLUMN_NAME  REFERENCED_TABLE_NAME  REFERENCED_COLUMN_NAME  DELETE_RULE
+----------        -----------  ---------------------  ----------------------  -----------
+behandeling_data  patient_key  patient_data           patient_key             CASCADE
+
+Als een patient wordt verwijderd, dan worden automatisch alle behandelingen verwijderd
+die bij deze patient horen.
+
+ ---------  1           *  -------------
+| patient |---------------| behandeling |
+ ---------                 -------------
+
+Bij het modelleren is er een one-to-many relatie van patient naar behandeling:
+bij 1 patient horen 0 of meerdere behandelingen.
+Bij het modelleren leg je de relatie vast bij patient, maar de foreign key
+constraint is gedefinieerd bij behandeling. Net andersom dus.
+
+De vraag is hoe we foreign key constraints uit de database moeten vertalen naar
+relaties tussen modellen.
+
+Database:
+Behandeling -- fk --> Patient
+
+Relationeel model:
+Patient:Behandelingen
+
+Mogelijke oplossing:
+Method Ref() bij een model:
+func (m IModel) Ref(vertaalde_fk_naam string) IModel
+Patient.Ref("huisarts")
+Heeft Patient een foreign key met de naam patient_huisarts?
+Ja -> Naar welk model refereert de foreign key? ->
+"relatie" -> registry.Query("relatie").Get(<patient_huisarts>)
+
+Syntactic sugar: Patient.Huisarts gedefinieerd in het model.
+!! Patient.Fields("huisarts") moet ook kunnen worden gebruikt.
+
+func (m IModel) BackRef(modelnaam string) []IModel
+Patient.BackRef("behandeling")
+Heef Behandeling een foreign key naar patient?
+registry.Query("behandeling").FromSql(`SELECT * FROM behandeling_data WHERE patient_key = ?`, m.Fields(<key>))
+
+Syntactic sugar: Patient.Behandelingen gedefinieerd in het model
+!! Patient.Fields("behandelingen") moet ook kunnen worden gebruikt.
+
+
+Er is denk ik geen mogelijkheid dat huisarts automatisch kan worden afgeleid uit een forein key constraint?
+Toch wel. Patient:Huisarts is een Many-to-One relatie. De foreign key heet patient_huisarts, 
+dus de veldnaam in het model is Patient.Huisarts of Patient.Fields("huisarts")
+
+BELANGRIJK
+----------
+Bij een many-to-one relatie moet zowel de foreign key als het model beschikbaar zijn. In het geval van
+Patient:Huisarts en is de foreign key beschikbaar in de Fields() array onder de niet vertaalde naam: patient_huisarts.
+Afspraak: foreign key velden moeten met de oorspronkelijke veldnaam aan de veldarray worden toegevoegd
+en bij het modelleren moet de naam van de relatie anders zijn dan de veldnaam.
+
+MANY-TO-ONE
+-----------
+Patient.Ref("huisarts")
+
+
+
+The API syntax isn't that special. The ArangoDB Query Builder (aqb on npm) for example is even more straightforward (no functions needed):
+    a.for("album").in("catalog").filter(
+      a.eq("album.details.media_type_id", 2)
+    ).return("album")
+Or in plain AQL (ArangoDB's query language):
+    FOR album IN catalog
+    FILTER album.details.media_type_id == 2
+    RETURN album
+The "map" in the second example is simpler, too:
+   ….return({artist: 'album.vendor.name'})
+Or in plain AQL:
+   … RETURN {artist: album.vendor.name}
+Also, it doesn't really need drivers because the DB uses a REST API that works with any HTTP client.
+That said, the change feeds are pretty neat and RethinkDB is still a pretty exciting project to follow.
+(Full disclosure: I wrote the ArangoDB Query Builder without any prior exposure to ReQL, so I may be biased)
+reply
+	
+coffeemug 12 hours ago
+
+You don't actually need to use functions in ReQL either (although you can). For example
+  r.table('users').filter(function(row) {
+    return row('age').gt(30);
+  })
+Could be expressed as:
+  r.table('users').filter(r.row('age').gt(30))
+That being said aqb looks pretty cool and quite similar to ReQL.
+reply
+	
+pluma 10 hours ago
+
+Neat. I actually prefer the "infix" style for operators (i.e. having the methods on the values instead of on the helper) and I'll see whether I can adjust AQB to support that.
+reply
+	
+mmgutz 10 hours ago
+
+Postgres 9.3+ is fairly straight-forward too. Here is go + github.com/mgutz/dat
+    // one trip to database using subqueries and Postgres' JSON functions
+    con.SelectDoc("id", "user_name", "avatar").
+        HasMany("recent_comments", `SELECT id, title FROM comments WHERE id = users.id LIMIT 10`).
+        HasMany("recent_posts", `SELECT id, title FROM posts WHERE author_id = users.id LIMIT 10`).
+        HasOne("account", `SELECT balance FROM accounts WHERE user_id = users.id`).
+        From("users").
+        Where("id = $1", 4).
+        QueryStruct(&obj) // obj must be agreeable with json.Unmarshal()
+results in
+    {
+        "id": 4,
+        "user_name": "mario",
+        "avatar": "https://imgur.com/a23x.jpg",
+        "recent_comments": [{"id": 1, "title": "..."}],
+        "recent_posts": [{"id": 1, "title": "..."}],
+        "account": {
+            "balance": 42.00
+        }
+    }
+reply
+
+r.table('users').filter(r.row('age').gt(30))   // gt, gte, lt, lte, eq, ne, in, nin
+
+type Selectable struct {
+	Entity Entity
+	Field string
+	Param SqlParam
+}
+
+type SqlParam struct {
+	Operator string // "=", "<", ...
+	Value interface{}
+}
