@@ -155,3 +155,11 @@ type SqlParam struct {
 	Operator string // "=", "<", ...
 	Value interface{}
 }
+
+-------------------------------------------------------------------------------------
+  ORM syntax
+-------------------------------------------------------------------------------------
+Key string `db:"varchar(25), PK"`
+Huisarts string `db:"varchar(25), FK(relatie:key, name=patient_huisarts)"`
+Huisarts *Relatie `db:"ManyToOne(relatie)"`
+Behandelingen []*Behandeling `db:"OneToMany(behandeling)"`
