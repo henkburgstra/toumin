@@ -207,13 +207,13 @@ func (m *Model) Scan(rows *sql.Rows) {
 	values := make([]interface{}, len(columns))
 	pValues := make([]interface{}, len(columns))
 
-	for i, _ := range columns {
+	for i := range columns {
 		pValues[i] = &values[i]
 	}
 
 	rows.Scan(pValues...)
 
-	for i, _ := range columns {
+	for i := range columns {
 		belongs := true
 		// if the model is registered, only use the fields that belong to this model.
 		if entity != nil {
